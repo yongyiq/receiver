@@ -13,7 +13,7 @@
 %   cfg.Rdec       = 10;      % 抽取倍率
 %   cfg.M          = 1024;    % FIR 阶数 (可选, 默认 1024)
 %   cfg.detector   = 'Energy';% 'Energy' | 'CFAR'
-%   cfg.combine_adjacent = false; % 合并邻道能量再做检测
+%   cfg.combine_adjacent = [];    % 合并邻道能量再做检测
 %   cfg.do_baseband= true;    % 是否输出基带
 %   cfg.do_recon   = false;   % 是否综合重构
 %   % 可选自定义原型低通, 否则自动 fir1()
@@ -66,8 +66,11 @@ fs    = cfg.fs;
 D     = cfg.D;
 Rdec  = cfg.Rdec;
 M     = cfg.M;
-if isfield(cfg, 'combine_adjacent')
+if isfield(cfg, 'combine_adjacent') && ~isempty(cfg.combine_adjacent)
     combine_adjacent = cfg.combine_adjacent;
+elseif Rdec > D
+    % 若抽取倍率大于信道数, 每个子带可能过窄, 默认合并临近能量
+    combine_adjacent = true;
 else
     combine_adjacent = false;
 end
