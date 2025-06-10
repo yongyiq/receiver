@@ -13,6 +13,7 @@
 %   cfg.Rdec       = 10;      % 抽取倍率
 %   cfg.M          = 1024;    % FIR 阶数 (可选, 默认 1024)
 %   cfg.detector   = 'Energy';% 'Energy' | 'CFAR'
+%   cfg.combine_adjacent = false; % 合并邻道能量再做检测
 %   cfg.do_baseband= true;    % 是否输出基带
 %   cfg.do_recon   = false;   % 是否综合重构
 %   % 可选自定义原型低通, 否则自动 fir1()
@@ -65,12 +66,23 @@ fs    = cfg.fs;
 D     = cfg.D;
 Rdec  = cfg.Rdec;
 M     = cfg.M;
+if isfield(cfg, 'combine_adjacent')
+    combine_adjacent = cfg.combine_adjacent;
+else
+    combine_adjacent = false;
+end
 cfar_win   = 5;      % 3 左 + 3 右
 os_rank    = 6;      % 取排序后第 4 位功率作噪声估计
 cfar_alpha = 3.0;
 % 若未给 h_proto -> 自动设计
 if isempty(cfg.h_proto)
-    h_proto = fir1(M-1, 1/Rdec, hamming(M));
+    if Rdec > D
+        warning('Rdec (%d) > D (%d); prototype LPF widened to cover channel spacing.', Rdec, D);
+        cutoff = 1/D;             % 保证通带覆盖 D 个子信道的间隔
+    else
+        cutoff = 1/Rdec;
+    end
+    h_proto = fir1(M-1, cutoff, hamming(M));
 else
     h_proto = cfg.h_proto(:).';   % 确保行向量
     M       = length(h_proto);
@@ -82,6 +94,9 @@ len_dec = length(y_dec{1});
 
 %% ---------- 2. 信道检测 ----------
 E = cellfun(@(x) sum(abs(x).^2), y_dec);   % 每子带能量
+if combine_adjacent
+    E = E + circshift(E,1) + circshift(E,-1);
+end
 
 switch lower(cfg.detector)
     %-------------------------------------------------
