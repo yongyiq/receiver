@@ -1,0 +1,73 @@
+function Signal = radarcmReceiverSim(Global, receiveSignal, RADARCMpara)
+%======================================================================
+%  输入:
+%     Global         全局参数 (含 fs)
+%     receiveSignal  Cell/Struct, 由 radarcmReceiveSignalGen 生成
+%                    约定: receiveSignal{r}.sig  ==> 接收机 r 的 Ns×1 复基带
+%     RADARCMpara    侦察接收机参数数组
+%  输出:
+%     Signal(r)      结构体, 每台接收机的信道化结果
+%======================================================================
+
+Nr = numel(RADARCMpara);      % 接收机数量
+
+for r = 1:Nr
+    %% ---------- 1. 取出硬件与算法参数 ----------
+    chPara = RADARCMpara(r).receiver.chPara;
+    fs     = chPara.fs;
+    D      = chPara.D;
+    Rdec   = chPara.Rdec;
+    M      = chPara.M;
+
+    % ---- 原型低通: 由 Rdec 决定 ----
+    h_proto = fir1(M-1, 1/Rdec, hamming(M));
+
+    % ---- 组装 rx_param 给 PolyphaseReceiver ----
+    rx_param            = chPara;     % 直接复制
+    rx_param.h_proto    = h_proto;
+    rx_param.do_baseband= true;
+    rx_param.do_recon   = false;
+
+    %% ---------- 2. 将所有辐射源信号叠加 ----------
+    idx_r   = find([receiveSignal.receiver] == r);
+    if isempty(idx_r)
+        rx_sig = zeros(round(Global.frame * Global.fs), 1);
+    else
+        Ns     = numel(receiveSignal(idx_r(1)).signal);
+        rx_sig = zeros(Ns, 1);
+        for k = idx_r
+            receiveSignal(k).signal(:) = receiveSignal(k).signal(:) / ;
+            rx_sig = rx_sig + receiveSignal(k).signal(:);
+        end
+    end
+        % 归一化
+    rx_sig = rx_sig / max(abs(rx_sig));
+    %% ---------- 3. 添加接收机噪声 ----------
+    SNR_dB = 30;
+    BW    = fs/2;                       % 暂定瞬时带宽 = Nyquist
+    kT    = physconst('Boltzmann') * 290;   % 4.003e-21
+    Psig = mean(abs(rx_sig).^2);
+    sigma= sqrt(Psig / 10^(SNR_dB/10));
+
+    rx_sig = rx_sig + sigma*(randn(size(rx_sig))+1j*randn(size(rx_sig)));
+
+    %% ---------- 4. 多相滤波+检测 ----------
+    rx_out = PolyphaseReceiver(rx_sig, rx_param);
+
+    %% ---------- 5. 整理输出到 Signal(r) ----------
+    Signal(r).receiverNum = r;
+    Signal(r).chTotalNum = D;
+    active = rx_out.active_ch;
+    Signal(r).activeCh = active;
+    for k = 1:D
+        Signal(r).ch(k).signal = rx_out.y_dec{k};
+    end
+    % % 若只希望保存 active 信道, 可在此过滤
+    % ------------ 只保存活跃信道信号 ------------
+    for ii = 1:numel(active)
+        k = active(ii);                           % 第 k 条子带
+        Signal(r).activeChSignal(ii).ch = k;  % 信道号
+        Signal(r).activeChSignal(ii).signal = rx_out.y_dec{k};  % 抽取后信号
+    end
+end
+end

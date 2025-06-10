@@ -1,0 +1,156 @@
+function [PDW_matrix_all] = radarcmParameterMeasurement(Global, signal, RADARCMpara)
+%% 函数功能：对数字信道化后的信号进行脉冲参数测量，生成PDW矩阵
+% 输入：
+%   Global          仿真全局参数结构体
+%   signal          侦察接收机输出的信道化信号结构体（来自radarcmReceiverSim）
+%   RADARCMpara     侦察接收机参数数组
+% 输出：
+%   PDW_matrix_all  包含所有接收机PDW数据的矩阵
+
+% 初始化存储所有接收机的PDW矩阵
+PDW_matrix_all = {};  % 用于存储所有接收机的PDW数据
+Global.fs = Global.fs / 10;
+% 获取接收机总数
+num_receivers = signal.receiverNum;
+
+% 遍历每个接收机
+for r = 1:num_receivers  % num_receivers 是接收机的总数
+    % 获取当前接收机的信道总数
+    num_channels = signal.chTotalNum;
+
+    % 初始化当前接收机的PDW矩阵
+    PDW_matrix_receiver = [];
+
+    % 获取信号的活动信道信息
+    activeChSignal = signal.activeChSignal;  % 获取活动信道的信号数据
+
+    % 遍历当前接收机的所有活动信道
+    for idx = 1:length(activeChSignal)  % 遍历活动信道
+        % 获取当前信道的编号（例如 activeChSignal.ch = 2 表示信号落在信道2）
+        active_channel = activeChSignal(idx).ch;
+
+        % 获取当前信道的信号数据
+        signal_data = activeChSignal(idx).signal;
+
+        %% 脉冲检测（基于包络检测）
+        signal_env = abs(hilbert(signal_data)); % Hilbert包络
+        env_norm = signal_env / max(signal_env); % 幅度归一化
+
+        % 自适应阈值（均值+3倍标准差）
+        thresh = mean(env_norm) + 3*std(env_norm);
+        thresh = min(max(thresh, 0.1), 0.5); % 限制阈值范围
+
+        % 脉冲边沿检测
+        rising_edges = find(diff(env_norm > thresh) == 1) + 1;
+        falling_edges = find(diff(env_norm > thresh) == -1) + 1;
+
+        % 验证边沿配对
+        if length(rising_edges) ~= length(falling_edges) || ...
+           any(falling_edges < rising_edges)
+            if isempty(rising_edges) || isempty(falling_edges)
+                pdw = zeros(0, 5);  % 返回一个空矩阵，表示没有脉冲
+                return;
+            end
+            % 边沿对齐处理
+            if rising_edges(1) > falling_edges(1)
+                falling_edges(1) = [];
+            end
+            if rising_edges(end) > falling_edges(end)
+                rising_edges(end) = [];
+            end
+        end
+
+        % 筛选有效脉冲
+        valid_pulses = false(1, length(rising_edges));
+        for k = 1:length(rising_edges)
+            pulse_width = falling_edges(k) - rising_edges(k);
+            % 验证脉宽和间隔
+            if pulse_width >= 200  % 最小有效脉冲宽度点数
+                if k > 1
+                    prev_end = falling_edges(k-1);
+                    separation = rising_edges(k) - prev_end;
+                    if separation < 50  % 最小脉冲间隔点数
+                        continue; % 跳过间隔过小脉冲
+                    end
+                end
+                valid_pulses(k) = true;
+            end
+        end
+        rising_edges = rising_edges(valid_pulses);
+        falling_edges = falling_edges(valid_pulses);
+        num_pulses = length(rising_edges);
+
+        %% 参数计算
+        TOA_us = zeros(1, num_pulses);
+        TOE_us = zeros(1, num_pulses);
+        PW_us = zeros(1, num_pulses);
+        PA = zeros(1, num_pulses);
+        RF_MHz = zeros(1, num_pulses);
+
+        for k = 1:num_pulses
+            % 提取脉冲段
+            pulse_start = rising_edges(k);
+            pulse_end = falling_edges(k);
+            pulse_data = signal_data(pulse_start:pulse_end);
+
+            % 时间参数（转换为us）
+            TOA_us(k) = (pulse_start-1) / Global.fs * 1e6;
+            TOE_us(k) = (pulse_end-1) / Global.fs * 1e6;
+            PW_us(k) = TOE_us(k) - TOA_us(k);
+
+            % 幅度参数
+            PA(k) = max(abs(pulse_data));
+
+            %% 基于FFT的频率测量（频谱分析）
+            N = length(pulse_data);                      % 信号长度
+            fft_signal = fft(pulse_data);                % 计算FFT
+            fft_freq = (0:N-1) * (Global.fs / N);        % 计算频率范围
+
+            % 获取频谱幅度
+%             magnitude = abs(fft_signal);
+% %              % 绘制频谱图
+% %             figure;
+% %             plot(fft_freq / 1e6, magnitude);  % 频率单位为MHz
+% %             title(['FFT Spectrum of Pulse ', num2str(k), ' for Receiver ', num2str(r), ' Channel ', num2str(active_channel)]);
+% %             xlabel('Frequency (MHz)');
+% %             ylabel('Magnitude');
+% %             grid on;
+% 
+%             % 不限制频率范围，选择频谱中最大峰值
+%             [~, peak_idx] = max(magnitude);
+% 
+%             % 计算频率值，单位为Hz
+%             RF_Hz = fft_freq(peak_idx);   
+%             RF_MHz(k) = RF_Hz / 1e6;         % 将频率转换为MHz
+            %% 基于FFT的频率测量（频谱分析）
+            fs_ch = Global.fs;  % D倍抽取后，信道信号的采样率
+            f_center = (active_channel-1) * fs_ch;
+
+            N = length(pulse_data);
+            fft_signal = fft(pulse_data);
+            fft_freq = (0:N-1) * (fs_ch / N);  % 频率轴
+
+            [~, peak_idx] = max(abs(fft_signal));
+            f_offset = fft_freq(peak_idx);
+
+            RF_Hz = f_center + f_offset;
+            RF_MHz(k) = RF_Hz / 1e6;
+
+        end
+
+        %% 构造PDW输出矩阵
+        pdw_data = [TOA_us', PW_us', PA', RF_MHz', TOE_us'];
+
+        % 将每个信道的多个脉冲的PDW参数存储到当前接收机的PDW矩阵中
+        PDW_matrix_receiver = [PDW_matrix_receiver; pdw_data];
+    end
+
+    % 如果当前接收机有有效的信号数据，将其按 TOA 排序并保存
+    if ~isempty(PDW_matrix_receiver)
+        % 按照 TOA 顺序对接收机的 PDW 矩阵进行排序
+        PDW_matrix_receiver = sortrows(PDW_matrix_receiver, 1);  
+        % 保存当前接收机的 PDW 矩阵
+        PDW_matrix_all{r} = PDW_matrix_receiver;
+    end
+end
+end

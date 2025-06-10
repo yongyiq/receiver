@@ -1,0 +1,8 @@
+function [LFM]=lfm(PW,fc,B,t)
+%函数功能：产生lfm基带信号
+%% 输入
+
+    k=B/PW;%%%%%%%%%%%%%调频斜率
+    LFM=exp(1j*(2*pi*fc*t+pi*k*t.^2));
+end
+
